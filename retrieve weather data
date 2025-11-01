@@ -1,11 +1,27 @@
 # weather_api.py
 # Simple local API for geocoding + Met Éireann forecast retrieval
-# Run with: uvicorn weather_api:app --reload
+
+# here are the steps to setup server locally if needed
+
+# pip install fastapi uvicorn requests
+# uvicorn weatherGetter:app --reload
+# "weatherGetter" in the line above should be changed to whatever the file name this code is in
+"""
+These are for testing the functions
+
+Root endpoint: this is where the server is ran
+http://127.0.0.1:8000/
+
+Geocode a location: this is where you get the lat/lon by placename
+http://127.0.0.1:8000/api/geocode?location=Cork%20City
+
+Weather by location: this is where you get the weather by location
+http://127.0.0.1:8000/api/weather_by_location?location=Cork%20City
+"""
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-import xml.etree.ElementTree as ET
 
 app = FastAPI(title="Met Éireann Weather API Proxy")
 
@@ -18,28 +34,22 @@ app.add_middleware(
 )
 
 # --- 1. Geocode a location name using OpenStreetMap ---
-@app.get("/api/geocode")
-def geocode(location: str = Query(..., description="Place name, e.g. 'Cork City'")):
+def geocode_location(location: str):
     url = f"https://nominatim.openstreetmap.org/search?format=json&q={location}"
     r = requests.get(url, headers={"User-Agent": "WeatherAppDemo/1.0"})
     r.raise_for_status()
     data = r.json()
     if not data:
-        return {"error": "Location not found"}
-    result = {
-        "name": data[0]["display_name"],
-        "lat": data[0]["lat"],
-        "lon": data[0]["lon"],
-    }
-    return result
+        return None
+    return {"name": data[0]["display_name"], "lat": data[0]["lat"], "lon": data[0]["lon"]}
 
 
-# --- 2. Fetch and parse Met Éireann forecast data ---
+# --- 2. Fetch Met Éireann forecast data ---
 def fetch_forecast(lat, lon):
     url = (
         f"https://api.open-meteo.com/v1/forecast?"
         f"latitude={lat}&longitude={lon}"
-        f"&hourly=temperature_2m,precipitation,wind_speed_10m "
+        f"&hourly=temperature_2m,precipitation,wind_speed_10m"
         f"&timezone=Europe/Dublin"
     )
     r = requests.get(url, timeout=10)
@@ -47,19 +57,16 @@ def fetch_forecast(lat, lon):
     return r.json()
 
 
-
-def parse_forecast(xml_str: str):
-    root = ET.fromstring(xml_str)
-    forecasts = []
-    for time_elem in root.findall(".//time"):
-        entry = {"from": time_elem.get("from"), "to": time_elem.get("to")}
-        for elem in time_elem.findall(".//"):
-            if "value" in elem.attrib:
-                entry[elem.tag] = elem.attrib["value"]
-        forecasts.append(entry)
-    return forecasts
+# --- 3. Endpoint: geocode only ---
+@app.get("/api/geocode")
+def geocode(location: str = Query(..., description="Place name, e.g. 'Cork City'")):
+    result = geocode_location(location)
+    if not result:
+        raise HTTPException(status_code=404, detail="Location not found")
+    return result
 
 
+# --- 4. Endpoint: weather by lat/lon ---
 @app.get("/api/weather")
 def get_weather(lat: float, lon: float):
     try:
@@ -69,6 +76,24 @@ def get_weather(lat: float, lon: float):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- 5. New Endpoint: weather by location string (for React) ---
+@app.get("/api/weather_by_location")
+def weather_by_location(location: str = Query(..., description="Place name, e.g. 'Cork City'")):
+    geo = geocode_location(location)
+    if not geo:
+        raise HTTPException(status_code=404, detail="Location not found")
+
+    try:
+        weather = fetch_forecast(geo["lat"], geo["lon"])
+        return {
+            "location": geo["name"],
+            "lat": geo["lat"],
+            "lon": geo["lon"],
+            "weather": weather
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/")
 def root():
@@ -77,5 +102,6 @@ def root():
         "endpoints": {
             "geocode": "/api/geocode?location=Cork City",
             "weather": "/api/weather?lat=51.9&lon=-8.5",
+            "weather_by_location": "/api/weather_by_location?location=Cork City"
         },
     }
