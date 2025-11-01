@@ -1,0 +1,81 @@
+# weather_api.py
+# Simple local API for geocoding + Met Éireann forecast retrieval
+# Run with: uvicorn weather_api:app --reload
+
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import requests
+import xml.etree.ElementTree as ET
+
+app = FastAPI(title="Met Éireann Weather API Proxy")
+
+# Allow local React dev access (adjust origins if needed)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- 1. Geocode a location name using OpenStreetMap ---
+@app.get("/api/geocode")
+def geocode(location: str = Query(..., description="Place name, e.g. 'Cork City'")):
+    url = f"https://nominatim.openstreetmap.org/search?format=json&q={location}"
+    r = requests.get(url, headers={"User-Agent": "WeatherAppDemo/1.0"})
+    r.raise_for_status()
+    data = r.json()
+    if not data:
+        return {"error": "Location not found"}
+    result = {
+        "name": data[0]["display_name"],
+        "lat": data[0]["lat"],
+        "lon": data[0]["lon"],
+    }
+    return result
+
+
+# --- 2. Fetch and parse Met Éireann forecast data ---
+def fetch_forecast(lat, lon):
+    url = (
+        f"https://api.open-meteo.com/v1/forecast?"
+        f"latitude={lat}&longitude={lon}"
+        f"&hourly=temperature_2m,precipitation,wind_speed_10m "
+        f"&timezone=Europe/Dublin"
+    )
+    r = requests.get(url, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+
+def parse_forecast(xml_str: str):
+    root = ET.fromstring(xml_str)
+    forecasts = []
+    for time_elem in root.findall(".//time"):
+        entry = {"from": time_elem.get("from"), "to": time_elem.get("to")}
+        for elem in time_elem.findall(".//"):
+            if "value" in elem.attrib:
+                entry[elem.tag] = elem.attrib["value"]
+        forecasts.append(entry)
+    return forecasts
+
+
+@app.get("/api/weather")
+def get_weather(lat: float, lon: float):
+    try:
+        data = fetch_forecast(lat, lon)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.get("/")
+def root():
+    return {
+        "message": "Met Éireann Weather API Proxy is running.",
+        "endpoints": {
+            "geocode": "/api/geocode?location=Cork City",
+            "weather": "/api/weather?lat=51.9&lon=-8.5",
+        },
+    }
